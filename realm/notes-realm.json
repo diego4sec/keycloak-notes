@@ -1,0 +1,76 @@
+{
+  "realm": "notes",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "bruteForceProtected": true,
+
+  "roles": {
+    "realm": [
+      { "name": "notes-user", "description": "Can manage their own notes" },
+      { "name": "notes-admin", "description": "Can administer the notes app" }
+    ]
+  },
+
+  "defaultRole": {
+    "name": "default-roles-notes",
+    "composite": true,
+    "clientRole": false,
+    "composites": {
+      "realm": ["offline_access", "uma_authorization", "notes-user"]
+    }
+  },
+
+  "clients": [
+    {
+      "clientId": "notes-web",
+      "name": "Notes SPA",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://notes.localtest.me/*",
+        "https://notes.localtest.me/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": ["openid", "profile", "email", "roles"],
+      "protocolMappers": [
+        {
+          "name": "notes-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "notes-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "notes-api",
+      "name": "Notes API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ]
+}
