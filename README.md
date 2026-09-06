@@ -36,7 +36,9 @@ build time. Never use `start-dev` outside a throwaway shell.
 
 - realm `notes`, `sslRequired: external`, brute-force protection on
 - `notes-web`: **public** client, PKCE S256, standard flow only. No secret,
-  because anything shipped to a browser is public.
+  because anything shipped to a browser is public. Redirect URIs are exact,
+  port included: Keycloak matches the port, so reaching the app through a
+  port-forward needs that port listed. `:8081` is present for exactly that.
 - `notes-api`: **bearer-only** client. It is the token audience, never a login.
 - an audience mapper on `notes-web` so access tokens carry `aud: notes-api`.
   Without it the API rejects every token.
@@ -84,7 +86,11 @@ ingress to three clean prefixes: `/`, `/api`, `/auth`.
 
 - issuer: `<public-url>/auth/realms/notes`
 - JWKS: `<url>/auth/realms/notes/protocol/openid-connect/certs`
-- health: port **9000**, `/health/ready` (management port, not behind `/auth`)
+- health: port **9000**, `/auth/health/ready`. The management interface has
+  its own port but not its own path: `http-management-relative-path` defaults
+  to `http-relative-path`, so health sits under `/auth` too. Probing
+  `/health/ready` returns 404, and a liveness probe pointed there will kill a
+  Keycloak that started fine.
 
 `KC_HOSTNAME` must include the `/auth` path. It sets the entire public base URL,
 so without the path Keycloak serves at `/auth` but advertises an issuer without
