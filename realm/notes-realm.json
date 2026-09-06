@@ -50,6 +50,7 @@
         "http://localhost:5173/*",
         "http://notes.localhost/*",
         "https://notes.localhost/*",
+        "http://notes.localhost:90/*",
         "http://notes.localhost:8081/*"
       ],
       "webOrigins": [
