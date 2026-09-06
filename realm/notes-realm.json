@@ -8,23 +8,32 @@
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "bruteForceProtected": true,
-
   "roles": {
     "realm": [
-      { "name": "notes-user", "description": "Can manage their own notes" },
-      { "name": "notes-admin", "description": "Can administer the notes app" }
+      {
+        "name": "notes-user",
+        "description": "Can manage their own notes"
+      },
+      {
+        "name": "notes-admin",
+        "description": "Can administer the notes app"
+      },
+      {
+        "name": "default-roles-notes",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "notes-user"
+          ]
+        }
+      }
     ]
   },
-
   "defaultRole": {
     "name": "default-roles-notes",
     "composite": true,
-    "clientRole": false,
-    "composites": {
-      "realm": ["offline_access", "uma_authorization", "notes-user"]
-    }
+    "clientRole": false
   },
-
   "clients": [
     {
       "clientId": "notes-web",
@@ -39,15 +48,16 @@
       "fullScopeAllowed": false,
       "redirectUris": [
         "http://localhost:5173/*",
-        "http://notes.localtest.me/*",
-        "https://notes.localtest.me/*"
+        "http://notes.localhost/*",
+        "https://notes.localhost/*"
       ],
-      "webOrigins": ["+"],
+      "webOrigins": [
+        "+"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "+"
       },
-      "defaultClientScopes": ["openid", "profile", "email", "roles"],
       "protocolMappers": [
         {
           "name": "notes-api-audience",
@@ -71,6 +81,15 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false
+    }
+  ],
+  "scopeMappings": [
+    {
+      "client": "notes-web",
+      "roles": [
+        "notes-user",
+        "notes-admin"
+      ]
     }
   ]
 }

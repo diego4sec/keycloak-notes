@@ -58,6 +58,25 @@ Keycloak database. For cloud, `keycloak.importRealm` is `false` and the realm
 is managed deliberately (terraform provider or a one-shot Job) so you never
 end up with an untracked production realm.
 
+## Realm import gotchas, all learned the hard way
+
+Keycloak's realm import is quietly partial. Four things in this file look
+optional and are not:
+
+1. **Do not hand-list `defaultClientScopes`.** Omitting Keycloak's `basic`
+   scope removes the `sub` claim from every access token, and the API cannot
+   identify the caller. The field is absent here so the realm defaults apply.
+2. **Composites must be declared where they resolve.** A top-level
+   `defaultRole` block with a `composites` list is ignored: Keycloak builds its
+   own `default-roles-notes` and drops your entries, so the default role never
+   gets granted. Declaring the composite inside `roles.realm` is what sticks.
+3. **Every role named in a composite must be declared too.** Declaring
+   `roles.realm` replaces the implicit list, and referencing an undeclared role
+   fails the whole import with `Unable to find composite realm role`.
+4. **`fullScopeAllowed: false` needs `scopeMappings`.** Without them no realm
+   role reaches the token. That combination is deliberate: the token carries
+   only the two roles this app uses, not every role the user happens to hold.
+
 ## Endpoints
 
 Everything Keycloak is under `/auth` (`KC_HTTP_RELATIVE_PATH`), which keeps the
@@ -66,3 +85,13 @@ ingress to three clean prefixes: `/`, `/api`, `/auth`.
 - issuer: `<public-url>/auth/realms/notes`
 - JWKS: `<url>/auth/realms/notes/protocol/openid-connect/certs`
 - health: port **9000**, `/health/ready` (management port, not behind `/auth`)
+
+`KC_HOSTNAME` must include the `/auth` path. It sets the entire public base URL,
+so without the path Keycloak serves at `/auth` but advertises an issuer without
+it, and every token gets rejected downstream.
+
+Keycloak sets its auth cookies `Secure; SameSite=None`. Browsers only accept
+`Secure` cookies from a trustworthy origin, so a plain-HTTP deployment has to be
+on `localhost` or `*.localhost`. A loopback-resolving domain like
+`*.localtest.me` is not trustworthy to the browser and produces a login that
+loops with no error anywhere.
