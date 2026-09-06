@@ -1,0 +1,191 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+# Least privilege: read the repo, write packages. Nothing else.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    services:
+      # The smoke test runs the real entrypoint, `start --optimized`, which
+      # needs the Postgres the image was built for. start-dev is not a
+      # substitute: it re-runs augmentation and discards baked build options,
+      # including KC_HTTP_RELATIVE_PATH, so it would serve the realm at a path
+      # production never uses.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kc
+          POSTGRES_PASSWORD: kc
+          POSTGRES_DB: keycloak
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kc"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Realm JSON says what we think it says
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          realm = json.load(open("realm/notes-realm.json"))
+
+          assert realm["realm"] == "notes"
+          clients = {c["clientId"]: c for c in realm["clients"]}
+
+          web = clients["notes-web"]
+          assert web["publicClient"] is True, "notes-web must stay public"
+          assert web["attributes"]["pkce.code.challenge.method"] == "S256", "PKCE required"
+          assert "secret" not in web, "a public client must not carry a secret"
+          assert web.get("fullScopeAllowed") is False, "full scope must stay off"
+
+          # Hand-listing scopes silently drops Keycloak's `basic` scope, and with
+          # it the `sub` claim. Absent means "inherit the realm defaults".
+          assert "defaultClientScopes" not in web, \
+              "do not hand-list defaultClientScopes; it drops the basic scope"
+
+          # Without this mapper no token carries aud=notes-api and the API 401s.
+          mappers = {m["name"]: m for m in web["protocolMappers"]}
+          aud = mappers["notes-api-audience"]["config"]["included.client.audience"]
+          assert aud == "notes-api", "audience mapper must target notes-api"
+
+          assert clients["notes-api"]["bearerOnly"] is True, "notes-api is bearer-only"
+
+          # fullScopeAllowed is off, so roles only reach tokens via scopeMappings.
+          scoped = {s["client"]: s["roles"] for s in realm["scopeMappings"]}
+          assert "notes-user" in scoped["notes-web"], "notes-user must be in scope"
+
+          # The composite must be declared in roles.realm; a top-level
+          # defaultRole block has its composites ignored on import.
+          roles = {r["name"]: r for r in realm["roles"]["realm"]}
+          default = roles["default-roles-notes"]
+          assert "notes-user" in default["composites"]["realm"], \
+              "notes-user must be in the default-roles composite"
+          for named in default["composites"]["realm"]:
+              assert named in roles, f"composite names undeclared role {named}, import will fail"
+
+          assert not realm.get("users"), "no users in the image: that ships a credential"
+          print("realm file checks passed")
+          PYEOF
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: keycloak-notes:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start it for real
+        run: |
+          docker run -d --name kc --network host \
+            -e KC_DB_URL_HOST=127.0.0.1 \
+            -e KC_DB_USERNAME=kc -e KC_DB_PASSWORD=kc -e KC_DB_URL_DATABASE=keycloak \
+            -e KC_HOSTNAME=http://localhost:8080/auth \
+            -e KC_HTTP_ENABLED=true -e KC_CACHE=local \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            keycloak-notes:ci start --optimized --import-realm
+
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8080/auth/realms/notes/.well-known/openid-configuration >/dev/null; then
+              ready=1; break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' kc)" != "true" ]; then
+              echo "::error::Keycloak exited during startup"
+              docker logs kc 2>&1 | tail -40
+              exit 1
+            fi
+            sleep 3
+          done
+          [ "${ready:-}" = 1 ] || { echo "::error::realm never became reachable"; docker logs kc 2>&1 | tail -40; exit 1; }
+
+      # The issuer must carry the /auth path. KC_HOSTNAME sets the whole public
+      # base URL, and losing the path there makes Keycloak serve at /auth while
+      # advertising an issuer without it, which is a 401 on every API call.
+      - name: Advertised issuer keeps the /auth path
+        run: |
+          curl -s http://localhost:8080/auth/realms/notes/.well-known/openid-configuration > /tmp/disco.json
+          python3 - <<'PYEOF'
+          import json, sys
+          issuer = json.load(open("/tmp/disco.json"))["issuer"]
+          expected = "http://localhost:8080/auth/realms/notes"
+          if issuer != expected:
+              sys.exit(f"::error::issuer is {issuer}, expected {expected}")
+          print("issuer:", issuer)
+          PYEOF
+
+      # A realm can be valid JSON, import without error, and still be wrong.
+      # Every one of these was silently broken at some point, and each one costs
+      # a 401, a missing sub claim, or an empty roles list at runtime.
+      - name: The import produced what we asked for
+        run: |
+          docker exec kc bash -c '
+            set -e
+            K=/opt/keycloak/bin/kcadm.sh; C=/tmp/c.json
+            $K config credentials --config $C --server http://localhost:8080/auth \
+              --realm master --user admin --password admin >/dev/null
+
+            CID=$($K get clients --config $C -r notes -q clientId=notes-web --fields id --format csv --noquotes)
+
+            $K get clients/$CID/default-client-scopes --config $C -r notes --fields name --format csv --noquotes \
+              | grep -qx basic || { echo "basic scope missing: tokens will have no sub claim"; exit 1; }
+
+            $K get clients/$CID/scope-mappings/realm --config $C -r notes --fields name --format csv --noquotes \
+              | grep -qx notes-user || { echo "notes-user not in client scope: tokens will carry no roles"; exit 1; }
+
+            $K get roles/default-roles-notes/composites --config $C -r notes --fields name --format csv --noquotes \
+              | grep -qx notes-user || { echo "notes-user not granted by default: new users get 403"; exit 1; }
+
+            echo "post-import checks passed"
+          '
+
+      - name: Stop it
+        if: always()
+        run: docker rm -f kc || true
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/keycloak-notes
+          # No `latest`. A mutable tag means a cluster can silently run
+          # something other than what you deployed.
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-
+
+      # Retag the image that was just smoke-tested rather than building again,
+      # so what gets pushed is exactly what passed.
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          echo '${{ steps.meta.outputs.tags }}' | while read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag keycloak-notes:ci "$tag"
+            docker push "$tag"
+          done

@@ -27,6 +27,14 @@ Clone the real repo only if you need to patch Keycloak internals.
 
 ## Build
 
+CI does this on every push to `main` and every `v*` tag, publishing to
+`ghcr.io/<owner>/keycloak-notes` with tags `main`, `sha-<short>`, and the
+version on a tag. No `latest`, because a moving tag lets a cluster run
+something other than what you deployed. Authentication is `GITHUB_TOKEN`, so
+there are no registry secrets to manage.
+
+Locally:
+
     docker build -t keycloak-notes:dev .
 
 Runtime is `start --optimized`, because `kc.sh build` already ran at image
@@ -59,6 +67,25 @@ editing this file does **not** update a running realm. For local dev, drop the
 Keycloak database. For cloud, `keycloak.importRealm` is `false` and the realm
 is managed deliberately (terraform provider or a one-shot Job) so you never
 end up with an untracked production realm.
+
+## What CI verifies
+
+Beyond building, the workflow **starts the image against Postgres with
+`start --optimized`** and inspects the realm it actually produced:
+
+- the advertised issuer keeps its `/auth` path
+- the `basic` client scope is assigned, or tokens carry no `sub` claim
+- `notes-user` is in the client's scope mappings, or tokens carry no roles
+- `notes-user` is in the `default-roles-notes` composite, or new users get 403
+
+That job exists because a realm file can be valid JSON, import without a single
+error, and still be broken in every one of those ways. All four happened during
+development, and none was visible until a real login failed.
+
+It deliberately does not use `start-dev`. `start-dev` re-runs augmentation and
+throws away baked build options, `KC_HTTP_RELATIVE_PATH` included, so it serves
+the realm at a path production never uses and the issuer check would prove
+nothing.
 
 ## Realm import gotchas, all learned the hard way
 
